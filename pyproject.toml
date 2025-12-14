@@ -1,0 +1,17 @@
+[project]
+name = "demucs-gradio-stems"
+version = "0.1.0"
+description = "Gradio GUI for Demucs stem separation with optional yt-dlp input and mixdown export"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "BB" }]
+
+dependencies = [
+  "torch>=2.8.0,<3",
+  "gradio>=6.0.2,<7",
+  "soundfile>=0.13.1,<1",
+  "huggingface_hub>=1.2.3,<2",
+  "demucs>=4.0.1,<5",
+  "torchcodec>=0.9.1,<1",
+  "yt-dlp>=2025.12.8",
+]
