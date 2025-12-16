@@ -5,3 +5,4 @@ huggingface_hub>=1.2.3,<2
 demucs>=4.0.1,<5
 torchcodec>=0.9.1,<1
 yt-dlp>=2025.12.8
+matplotlib>=3.10.0,<4

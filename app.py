@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 import gradio as gr
+import matplotlib.pyplot as plt
 import numpy as np
 import soundfile as sf
 
@@ -27,6 +28,13 @@ DEMUCS_MODELS = [
 MAX_STEMS = 6  # htdemucs_6s
 AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
 DEFAULT_SR = 44100
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+NOTE_GUIDE_MIDIS = list(range(36, 97, 3))  # reduce clutter with wider spacing
+
+
+def _midi_to_name(midi: int) -> str:
+    octave = (midi // 12) - 1
+    return f"{NOTE_NAMES[midi % 12]}{octave}"
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess:
@@ -211,6 +219,100 @@ def _yt_dlp_download(url: str, outdir: Path) -> Path:
     return max(files, key=lambda x: x.stat().st_mtime)
 
 
+def _render_spectrogram(
+    wav_path: Path, start_seconds: float, window_seconds: float
+) -> tuple[Path, float]:
+    info = sf.info(wav_path)
+    sr = int(info.samplerate or DEFAULT_SR)
+    total_frames = int(info.frames or 0)
+    total_duration = total_frames / sr if total_frames else 0.0
+
+    window_seconds = max(1.0, float(window_seconds))
+    start_seconds = max(0.0, float(start_seconds))
+    max_start = max(0.0, total_duration - window_seconds)
+    start_seconds = min(start_seconds, max_start)
+
+    start_frame = int(start_seconds * sr)
+    end_frame = start_frame + int(window_seconds * sr)
+    if total_frames:
+        end_frame = min(end_frame, total_frames)
+
+    segment, _ = sf.read(
+        wav_path, start=start_frame, stop=end_frame, dtype="float32", always_2d=True
+    )
+    if segment.size == 0:
+        raise ValueError("Selected segment is empty. Try resetting the segment start.")
+
+    mono = segment.mean(axis=1)
+    n_fft = 2048
+    hop = 512
+    window = np.hanning(n_fft)
+
+    frames: list[np.ndarray] = []
+    for i in range(0, max(1, mono.shape[0] - n_fft), hop):
+        chunk = mono[i : i + n_fft]
+        if chunk.shape[0] < n_fft:
+            pad = np.zeros(n_fft - chunk.shape[0], dtype=chunk.dtype)
+            chunk = np.concatenate([chunk, pad])
+        chunk = chunk * window
+        spec = np.fft.rfft(chunk)
+        frames.append(np.abs(spec))
+
+    if not frames:
+        raise ValueError("Audio too short for spectrogram generation.")
+
+    mag = np.maximum(np.stack(frames, axis=1), 1e-12)
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
+    times = start_seconds + (np.arange(mag.shape[1]) * hop / sr)
+
+    fig, ax = plt.subplots(figsize=(14, 10))
+    mesh = ax.pcolormesh(times, freqs, 20 * np.log10(mag), shading="auto", cmap="magma")
+    ax.set_yscale("log")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Frequency (Hz)")
+    ax.set_title(f"Spectrogram: {wav_path.stem}")
+
+    if len(times) > 0:
+        x_min, x_max = float(times[0]), float(times[-1])
+    else:
+        x_min, x_max = start_seconds, start_seconds + window_seconds
+    x_pad = max(0.5, (x_max - x_min) * 0.05)
+    label_x = x_max + (x_pad * 0.3)
+
+    for midi in NOTE_GUIDE_MIDIS:
+        f = 440.0 * (2 ** ((midi - 69) / 12.0))
+        if f <= freqs[-1]:
+            color = "green"
+            ax.axhline(
+                f,
+                color=color,
+                alpha=0.75,
+                linewidth=1.5,
+                linestyle="--",
+                zorder=2,
+            )
+            ax.text(
+                label_x,
+                f,
+                _midi_to_name(midi),
+                color=color,
+                fontsize=9,
+                va="center",
+                ha="left",
+                bbox=dict(facecolor="black", alpha=0.3, edgecolor="none", pad=1.5),
+            )
+
+    fig.colorbar(mesh, ax=ax, label="Magnitude (dB)")
+    ax.set_ylim(60, min(freqs[-1], 4000))
+    ax.set_xlim(x_min, x_max + x_pad)
+    fig.tight_layout()
+
+    out_path = Path(tempfile.mkstemp(suffix="_spec.png", prefix="spectro_")[1])
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path, start_seconds
+
+
 @dataclass
 class SepResult:
     workdir: Path
@@ -259,6 +361,9 @@ def _demucs_separate(
 
 def build_ui():
     has_rb = ffmpeg_has_rubberband()
+
+    def _init_spectrogram_state():
+        return 0.0
 
     def _empty_stem_outputs():
         name_vals = [""] * MAX_STEMS
@@ -374,6 +479,41 @@ def build_ui():
             info="The mixdown is a simple sum + peak normalization (no fancy loudness matching).",
         )
 
+        gr.Markdown("### Spectrogram viewer")
+        with gr.Row():
+            spec_stem = gr.Dropdown(
+                label="Stem to visualize",
+                choices=[],
+                value=None,
+                info="Select a separated stem to view its spectrogram.",
+            )
+            spec_window = gr.Slider(
+                minimum=2,
+                maximum=60,
+                value=10,
+                step=1,
+                label="Window length (seconds)",
+                info="To reduce load, only the current window is analyzed. Advance to move through the track.",
+            )
+        with gr.Row():
+            spec_show = gr.Button("Show spectrogram", variant="primary")
+            spec_prev = gr.Button("Previous segment")
+            spec_next = gr.Button("Next segment")
+            spec_restart = gr.Button("Restart from beginning")
+        with gr.Row():
+            spec_offset_display = gr.Number(
+                label="Current segment start (s)",
+                value=0.0,
+                interactive=False,
+            )
+        spec_image = gr.Image(
+            label="Spectrogram with note guides",
+            type="filepath",
+            height=1000,
+            interactive=False,
+        )
+        spec_offset_state = gr.State(value=_init_spectrogram_state())
+
         gr.Markdown("### Mixdown / Export")
         with gr.Row():
             export_fmt = gr.Radio(
@@ -439,12 +579,16 @@ def build_ui():
                 *name_vals,
                 *audio_vals,
                 gr.update(choices=[], value=[]),
+                gr.update(choices=[], value=None),
                 "wav",
                 "320k",
                 1.0,
                 0.0,
                 None,
                 None,
+                _init_spectrogram_state(),
+                None,
+                0.0,
             )
 
         def do_separate(
@@ -514,6 +658,7 @@ def build_ui():
 
             choices = [k for k, _ in stems_sorted]
             default_sel = choices[:]
+            default_spec = choices[0] if choices else None
 
             return (
                 str(workdir),  # <- single root dir to cleanup
@@ -521,6 +666,10 @@ def build_ui():
                 *name_vals,
                 *audio_vals,
                 gr.update(choices=choices, value=default_sel),
+                gr.update(choices=choices, value=default_spec),
+                _init_spectrogram_state(),
+                None,
+                0.0,
             )
 
         def do_mixdown(
@@ -565,6 +714,57 @@ def build_ui():
                 _wav_to_mp3(final_wav, mp3_path, bitrate=bitrate)
                 return str(mp3_path), str(mp3_path)
 
+        def _spectro_common(
+            stem_name: Optional[str],
+            stems_dict: Optional[dict[str, str]],
+            offset: float,
+            window: float,
+        ):
+            if not stems_dict:
+                raise gr.Error("No stems available yet. Run separation first.")
+            if not stem_name:
+                raise gr.Error("Choose a stem to visualize.")
+            if stem_name not in stems_dict:
+                raise gr.Error("Selected stem is not available.")
+
+            img_path, used_offset = _render_spectrogram(
+                Path(stems_dict[stem_name]), float(offset), float(window)
+            )
+            return str(img_path), float(used_offset), float(used_offset)
+
+        def do_show_spectrogram(
+            stem_name: Optional[str],
+            stems_dict: Optional[dict[str, str]],
+            offset: float,
+            window: float,
+        ):
+            return _spectro_common(stem_name, stems_dict, offset, window)
+
+        def do_next_spectrogram(
+            stem_name: Optional[str],
+            stems_dict: Optional[dict[str, str]],
+            offset: float,
+            window: float,
+        ):
+            return _spectro_common(stem_name, stems_dict, offset + window, window)
+
+        def do_prev_spectrogram(
+            stem_name: Optional[str],
+            stems_dict: Optional[dict[str, str]],
+            offset: float,
+            window: float,
+        ):
+            return _spectro_common(
+                stem_name, stems_dict, max(0.0, offset - window), window
+            )
+
+        def do_restart_spectrogram(
+            stem_name: Optional[str],
+            stems_dict: Optional[dict[str, str]],
+            window: float,
+        ):
+            return _spectro_common(stem_name, stems_dict, 0.0, window)
+
         # Outputs for separation
         sep_outputs = [
             state_workdir,
@@ -572,6 +772,10 @@ def build_ui():
             *stem_name_outputs,
             *stem_audio_outputs,
             stem_selector,
+            spec_stem,
+            spec_offset_state,
+            spec_image,
+            spec_offset_display,
         ]
 
         sep_btn.click(
@@ -587,6 +791,27 @@ def build_ui():
                 state_workdir,
             ],
             outputs=sep_outputs,
+        )
+
+        spec_show.click(
+            do_show_spectrogram,
+            inputs=[spec_stem, state_stems, spec_offset_state, spec_window],
+            outputs=[spec_image, spec_offset_state, spec_offset_display],
+        )
+        spec_prev.click(
+            do_prev_spectrogram,
+            inputs=[spec_stem, state_stems, spec_offset_state, spec_window],
+            outputs=[spec_image, spec_offset_state, spec_offset_display],
+        )
+        spec_next.click(
+            do_next_spectrogram,
+            inputs=[spec_stem, state_stems, spec_offset_state, spec_window],
+            outputs=[spec_image, spec_offset_state, spec_offset_display],
+        )
+        spec_restart.click(
+            do_restart_spectrogram,
+            inputs=[spec_stem, state_stems, spec_window],
+            outputs=[spec_image, spec_offset_state, spec_offset_display],
         )
 
         mix_btn.click(
@@ -619,12 +844,16 @@ def build_ui():
                 *stem_name_outputs,
                 *stem_audio_outputs,
                 stem_selector,
+                spec_stem,
                 export_fmt,
                 mp3_bitrate,
                 tempo,
                 semitones,
                 mix_audio,
                 export_file,
+                spec_offset_state,
+                spec_image,
+                spec_offset_display,
             ],
         )
 

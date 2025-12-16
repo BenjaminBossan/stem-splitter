@@ -5,6 +5,7 @@ A small [Gradio web app](https://www.gradio.app/) to:
 - separate an audio track into stems using [Demucs](https://github.com/adefossez/demucs)
 - use tracks from your drive or fetch them from a URL
 - preview stems in the browser
+- show spectrogram
 - mix selected stems and export (wav/mp3)
 - optionally change tempo and/or pitch (requires ffmpeg `rubberband`)
 
@@ -37,3 +38,7 @@ Once the environment is set up, run:
 ```bash
 gradio app.py
 ```
+
+## Development
+
+Developed with ChatGPT 5.2.
