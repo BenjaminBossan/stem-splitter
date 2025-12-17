@@ -427,6 +427,7 @@ def build_ui():
         """,
     ) as demo:
         state_workdir = gr.State(value=None)  # str
+        state_input_audio = gr.State(value=None)  # str
         state_stems = gr.State(value=None)  # dict[str, str]
 
         gr.HTML(
@@ -739,6 +740,7 @@ def build_ui():
 
             return (
                 str(workdir),  # <- single root dir to cleanup
+                str(local_audio),
                 stems_dict,
                 *name_vals,
                 *audio_vals,
@@ -757,24 +759,90 @@ def build_ui():
             bitrate: str,
             tempo_val: float,
             semitones_val: float,
+            src: str,
+            audio_fp: Optional[str],
+            url: str,
+            input_audio: Optional[str],
         ):
-            if not stems_dict:
-                raise gr.Error("No stems available yet. Run separation first.")
-            if not selected_stems:
-                raise gr.Error("Select at least one stem to mix.")
+            wd = Path(workdir) if workdir else None
+            next_input_audio = input_audio
 
-            wd = Path(workdir)
-            outdir = wd / "mix"
-            outdir.mkdir(parents=True, exist_ok=True)
+            def _prepare_input(
+                existing_workdir: Optional[Path],
+            ) -> tuple[Path, Path]:
+                if src == "Upload file":
+                    if not audio_fp:
+                        raise gr.Error(
+                            "Please upload an audio file, or switch to 'From link'."
+                        )
+                    audio_path = _ensure_audio_file(audio_fp)
+                    workdir_path = existing_workdir or Path(
+                        tempfile.mkdtemp(prefix="mix_input_")
+                    )
+                    wav_path = workdir_path / "input" / "source.wav"
+                    if audio_path.suffix.lower() == ".wav":
+                        wav_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(audio_path, wav_path)
+                    else:
+                        _ffmpeg_convert_to_wav(audio_path, wav_path)
+                    return workdir_path, wav_path
 
-            stem_paths = [
-                Path(stems_dict[s]) for s in selected_stems if s in stems_dict
-            ]
-            mix, sr = _mix_wavs(stem_paths)
+                if not url.strip():
+                    raise gr.Error("Please paste a link, or switch to 'Upload file'.")
 
-            base = "mix_" + _slugify("+".join(selected_stems))
-            wav0 = outdir / f"{base}.wav"
-            _write_wav(wav0, mix, sr)
+                workdir_path = existing_workdir or Path(
+                    tempfile.mkdtemp(prefix="mix_link_")
+                )
+                dl_dir = workdir_path / "download"
+                downloaded = _yt_dlp_download(url.strip(), dl_dir)
+                wav_path = workdir_path / "input" / "source.wav"
+                if downloaded.suffix.lower() == ".wav":
+                    wav_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(downloaded, wav_path)
+                else:
+                    _ffmpeg_convert_to_wav(downloaded, wav_path)
+                return workdir_path, wav_path
+
+            if stems_dict:
+                if not selected_stems:
+                    raise gr.Error("Select at least one stem to mix.")
+
+                if wd is None:
+                    raise gr.Error("Missing session data. Please run separation again.")
+
+                outdir = wd / "mix"
+                outdir.mkdir(parents=True, exist_ok=True)
+
+                stem_paths = [
+                    Path(stems_dict[s]) for s in selected_stems if s in stems_dict
+                ]
+                mix, sr = _mix_wavs(stem_paths)
+
+                base = "mix_" + _slugify("+".join(selected_stems))
+                wav0 = outdir / f"{base}.wav"
+                _write_wav(wav0, mix, sr)
+
+            else:
+                if input_audio and Path(input_audio).exists():
+                    base_audio = Path(input_audio)
+                    wd = (
+                        wd or base_audio.parent.parent
+                        if base_audio.parent.parent.exists()
+                        else base_audio.parent
+                    )
+                else:
+                    wd, base_audio = _prepare_input(wd)
+                next_input_audio = str(base_audio)
+
+                outdir = wd / "mix"
+                outdir.mkdir(parents=True, exist_ok=True)
+
+                base = _slugify(Path(base_audio).stem)
+                wav0 = outdir / f"{base}.wav"
+                if base_audio.suffix.lower() == ".wav":
+                    shutil.copyfile(base_audio, wav0)
+                else:
+                    _ffmpeg_convert_to_wav(base_audio, wav0)
 
             final_wav = wav0
             if ffmpeg_has_rubberband() and (
@@ -785,11 +853,13 @@ def build_ui():
                 final_wav = wav1
 
             if fmt == "wav":
-                return str(final_wav), str(final_wav)
+                export_path = final_wav
             else:
                 mp3_path = outdir / f"{base}.mp3"
                 _wav_to_mp3(final_wav, mp3_path, bitrate=bitrate)
-                return str(mp3_path), str(mp3_path)
+                export_path = mp3_path
+
+            return str(wd), next_input_audio, str(final_wav), str(export_path)
 
         def _spectro_common(
             stem_name: Optional[str],
@@ -845,6 +915,7 @@ def build_ui():
         # Outputs for separation
         sep_outputs = [
             state_workdir,
+            state_input_audio,
             state_stems,
             *stem_name_outputs,
             *stem_audio_outputs,
@@ -901,8 +972,12 @@ def build_ui():
                 mp3_bitrate,
                 tempo,
                 semitones,
+                source,
+                inp_audio,
+                inp_url,
+                state_input_audio,
             ],
-            outputs=[mix_audio, export_file],
+            outputs=[state_workdir, state_input_audio, mix_audio, export_file],
         )
 
         # Reset outputs (explicitly list all components we want to clear)
@@ -917,6 +992,7 @@ def build_ui():
                 device,
                 two_stems,
                 state_workdir,
+                state_input_audio,
                 state_stems,
                 *stem_name_outputs,
                 *stem_audio_outputs,
