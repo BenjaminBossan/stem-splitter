@@ -267,10 +267,11 @@ def _render_spectrogram(
 
     fig, ax = plt.subplots(figsize=(14, 10))
     mesh = ax.pcolormesh(times, freqs, 20 * np.log10(mag), shading="auto", cmap="magma")
+    fontsize = 16
     ax.set_yscale("log")
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Frequency (Hz)")
-    ax.set_title(f"Spectrogram: {wav_path.stem}")
+    ax.set_xlabel("Time (s)", fontsize=fontsize)
+    ax.set_ylabel("Frequency (Hz)", fontsize=fontsize)
+    ax.set_title(f"Spectrogram: {wav_path.stem}", fontsize=fontsize)
 
     if len(times) > 0:
         x_min, x_max = float(times[0]), float(times[-1])
@@ -296,7 +297,7 @@ def _render_spectrogram(
                 f,
                 _midi_to_name(midi),
                 color=color,
-                fontsize=9,
+                fontsize=fontsize,
                 va="center",
                 ha="left",
                 bbox=dict(facecolor="black", alpha=0.3, edgecolor="none", pad=1.5),
@@ -370,182 +371,258 @@ def build_ui():
         audio_vals = [None] * MAX_STEMS
         return name_vals, audio_vals
 
-    with gr.Blocks(title="Demucs Stem Separator") as demo:
+    with gr.Blocks(
+        title="Demucs Stem Separator",
+        theme=gr.themes.Soft(
+            primary_hue="indigo",
+            secondary_hue="cyan",
+            neutral_hue="slate",
+        ),
+        css="""
+        body {
+            background: radial-gradient(circle at 12% 18%, rgba(91, 33, 182, 0.24), transparent 34%),
+                        radial-gradient(circle at 88% 12%, rgba(34, 211, 238, 0.18), transparent 32%),
+                        radial-gradient(circle at 18% 72%, rgba(59, 130, 246, 0.16), transparent 34%),
+                        #0b1224;
+        }
+        .gradio-container {
+            max-width: 1540px;
+            width: min(1540px, 99vw);
+            margin: 18px auto 26px;
+            padding: 2px 8px 14px;
+            background: transparent;
+        }
+        .app-header {
+            background: linear-gradient(120deg, #5b21b6, #2563eb, #06b6d4);
+            color: white;
+            padding: 22px 26px;
+            border-radius: 18px;
+            box-shadow: 0 20px 50px rgba(45, 55, 72, 0.25);
+        }
+        .section-card {
+            background: white;
+            border-radius: 16px;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0 10px 30px rgba(17, 24, 39, 0.06);
+            padding: 18px 18px 8px;
+        }
+        .section-card h3, .section-card h4 {
+            margin-top: 0;
+            margin-bottom: 10px;
+        }
+        .compact-row .gr-form .gr-block, .compact-row .gr-block {
+            margin-bottom: 6px !important;
+        }
+        .button-row button {
+            min-height: 52px;
+            font-weight: 700;
+        }
+        .accent-text {
+            color: #4338ca;
+            font-weight: 600;
+        }
+        .spec-image img {
+            border-radius: 12px;
+        }
+        """,
+    ) as demo:
         state_workdir = gr.State(value=None)  # str
         state_stems = gr.State(value=None)  # dict[str, str]
 
-        gr.Markdown(
-            "### Demucs Stem Separator\n"
-            "Separate a track into stems using Demucs, preview them, then mix selected stems into a new export."
+        gr.HTML(
+            """
+            <div class="app-header">
+              <h1 style="margin: 0; font-size: 30px;">Demucs Stem Separator</h1>
+              <p style="margin: 6px 0 0; font-size: 16px; opacity: 0.9;">Split songs into clean stems, audition them, and blend the pieces you need.</p>
+            </div>
+            """
         )
 
-        with gr.Accordion("Help / Notes", open=False):
+        with gr.Accordion("Quick tips", open=False):
             gr.Markdown(
                 "- Choose **Upload file** or **From link** (YouTube etc.).\n"
                 "- Link downloads require `yt-dlp` in the environment.\n"
                 "- Note: Excessive use of yt-dlp may result in rate limits."
                 "- Tempo/pitch controls require ffmpeg with the `rubberband` filter.\n"
-                "- Separation can take time; GPU is recommended."
+                "- Separation can take time; GPU is recommended.",
             )
 
-        with gr.Row():
-            source = gr.Radio(
-                choices=["Upload file", "From link"],
-                value="Upload file",
-                label="Input source",
-            )
+        with gr.Row(equal_height=True):
+            with gr.Column(scale=6):
+                with gr.Group(elem_classes=["section-card"]):
+                    gr.Markdown("### 1) Choose your source")
+                    with gr.Row():
+                        source = gr.Radio(
+                            choices=["Upload file", "From link"],
+                            value="Upload file",
+                            label="Input source",
+                        )
+                    with gr.Row():
+                        inp_audio = gr.Audio(
+                            label="Audio file",
+                            type="filepath",
+                            visible=True,
+                        )
+                        inp_url = gr.Textbox(
+                            label="Audio link (YouTube etc.)",
+                            placeholder="Paste a URL here",
+                            visible=False,
+                        )
 
-        with gr.Row():
-            inp_audio = gr.Audio(
-                label="Audio file",
-                type="filepath",
-                visible=True,
-            )
-            inp_url = gr.Textbox(
-                label="Audio link (YouTube etc.)",
-                placeholder="Paste a URL here",
-                visible=False,
-            )
+                    gr.Markdown("### 2) Separation settings")
+                    with gr.Row():
+                        model = gr.Dropdown(
+                            choices=DEMUCS_MODELS,
+                            value="htdemucs",
+                            label="Demucs model",
+                            info="htdemucs is a strong default. htdemucs_6s provides extra stems (incl. guitar/piano) when supported.",
+                        )
 
-        with gr.Row():
-            model = gr.Dropdown(
-                choices=DEMUCS_MODELS,
-                value="htdemucs",
-                label="Demucs model",
-                info="htdemucs is a strong default. htdemucs_6s provides extra stems (incl. guitar/piano) when supported.",
-            )
+                    with gr.Row():
+                        device = gr.Dropdown(
+                            choices=["cuda", "cpu"],
+                            value="cuda"
+                            if _run(
+                                [
+                                    "python",
+                                    "-c",
+                                    "import torch; print(int(torch.cuda.is_available()))",
+                                ]
+                            ).stdout.strip()
+                            == "1"
+                            else "cpu",
+                            label="Device",
+                            info="Use cuda if available for speed.",
+                        )
+                        two_stems = gr.Checkbox(
+                            label="Two-stems mode (vocals + no_vocals)",
+                            value=False,
+                            info="Uses Demucs' --two-stems=vocals. Helpful if you only want a quick vocal split.",
+                        )
+                        shifts = gr.Slider(
+                            minimum=0,
+                            maximum=10,
+                            value=2,
+                            step=1,
+                            label="Shifts (quality vs speed)",
+                            info=(
+                                "Uses Demucs' time-shift trick. Higher usually improves quality but increases runtime roughly linearly. "
+                                "0 disables it."
+                            ),
+                        )
 
-        with gr.Row():
-            device = gr.Dropdown(
-                choices=["cuda", "cpu"],
-                value="cuda"
-                if _run(
-                    [
-                        "python",
-                        "-c",
-                        "import torch; print(int(torch.cuda.is_available()))",
-                    ]
-                ).stdout.strip()
-                == "1"
-                else "cpu",
-                label="Device",
-                info="Use cuda if available for speed.",
-            )
-            two_stems = gr.Checkbox(
-                label="Two-stems mode (vocals + no_vocals)",
-                value=False,
-                info="Uses Demucs' --two-stems=vocals. Helpful if you only want a quick vocal split.",
-            )
-            shifts = gr.Slider(
-                minimum=0,
-                maximum=10,
-                value=2,
-                step=1,
-                label="Shifts (quality vs speed)",
-                info=(
-                    "Uses Demucs' time-shift trick. Higher usually improves quality but increases runtime roughly linearly. "
-                    "0 disables it."
-                ),
-            )
+                    with gr.Row(elem_classes=["button-row"]):
+                        sep_btn = gr.Button("Separate", variant="primary")
+                        reset_btn = gr.Button("Reset", variant="secondary")
 
-        with gr.Row():
-            sep_btn = gr.Button("Separate", variant="primary")
-            reset_btn = gr.Button("Reset", variant="secondary")
+                    gr.Markdown(
+                        (
+                            "**Note:** your ffmpeg does not appear to have the `rubberband` audio filter enabled, "
+                            "so tempo/pitch controls will be ignored."
+                        ),
+                        visible=not has_rb,
+                        elem_classes=["accent-text"],
+                    )
 
-        gr.Markdown(
-            (
-                "**Note:** your ffmpeg does not appear to have the `rubberband` audio filter enabled, "
-                "so tempo/pitch controls will be ignored."
-            ),
-            visible=not has_rb,
-        )
+            with gr.Column(scale=5):
+                with gr.Group(elem_classes=["section-card"]):
+                    gr.Markdown("### 3) Mixdown / Export")
+                    with gr.Row():
+                        export_fmt = gr.Radio(
+                            choices=["wav", "mp3"], value="wav", label="Export format"
+                        )
+                        mp3_bitrate = gr.Dropdown(
+                            choices=["192k", "256k", "320k"],
+                            value="320k",
+                            label="MP3 bitrate",
+                        )
 
-        gr.Markdown("### Stems (preview)")
-        stem_audio_outputs: list[gr.Audio] = []
-        stem_name_outputs: list[gr.Textbox] = []
-        for i in range(MAX_STEMS):
+                    stem_selector = gr.CheckboxGroup(
+                        label="Select stems to include in mixdown",
+                        choices=[],
+                        value=[],
+                        info="The mixdown is a simple sum + peak normalization (no fancy loudness matching).",
+                    )
+
+                    with gr.Row():
+                        tempo = gr.Slider(
+                            minimum=0.5,
+                            maximum=1.5,
+                            value=1.0,
+                            step=0.01,
+                            label="Tempo (keep pitch)",
+                            info="Requires ffmpeg rubberband. 1.0 = no change.",
+                        )
+                        semitones = gr.Slider(
+                            minimum=-12.0,
+                            maximum=12.0,
+                            value=0.0,
+                            step=0.1,
+                            label="Pitch shift (keep tempo, semitones)",
+                            info="Requires ffmpeg rubberband. 0.0 = no change.",
+                        )
+
+                    mix_btn = gr.Button("Create mixdown", variant="primary")
+                    mix_audio = gr.Audio(
+                        label="Mixdown preview", type="filepath", buttons=["download"]
+                    )
+                    export_file = gr.File(label="Download exported file")
+
+        with gr.Group(elem_classes=["section-card"]):
+            gr.Markdown("### Stems (preview)")
+            stem_audio_outputs: list[gr.Audio] = []
+            stem_name_outputs: list[gr.Textbox] = []
+            for row_start in range(0, MAX_STEMS, 2):
+                with gr.Row():
+                    for j in range(row_start, min(row_start + 2, MAX_STEMS)):
+                        with gr.Column():
+                            name = gr.Textbox(
+                                label=f"Stem {j + 1} name", interactive=False
+                            )
+                            audio = gr.Audio(
+                                label=f"Stem {j + 1}",
+                                type="filepath",
+                                buttons=["download"],
+                            )
+                        stem_name_outputs.append(name)
+                        stem_audio_outputs.append(audio)
+
+        with gr.Group(elem_classes=["section-card"]):
+            gr.Markdown("### Spectrogram viewer")
             with gr.Row():
-                name = gr.Textbox(label=f"Stem {i + 1} name", interactive=False)
-                audio = gr.Audio(
-                    label=f"Stem {i + 1}", type="filepath", buttons=["download"]
+                spec_stem = gr.Dropdown(
+                    label="Stem to visualize",
+                    choices=[],
+                    value=None,
+                    info="Select a separated stem to view its spectrogram.",
                 )
-            stem_name_outputs.append(name)
-            stem_audio_outputs.append(audio)
-
-        stem_selector = gr.CheckboxGroup(
-            label="Select stems to include in mixdown",
-            choices=[],
-            value=[],
-            info="The mixdown is a simple sum + peak normalization (no fancy loudness matching).",
-        )
-
-        gr.Markdown("### Spectrogram viewer")
-        with gr.Row():
-            spec_stem = gr.Dropdown(
-                label="Stem to visualize",
-                choices=[],
-                value=None,
-                info="Select a separated stem to view its spectrogram.",
-            )
-            spec_window = gr.Slider(
-                minimum=2,
-                maximum=60,
-                value=10,
-                step=1,
-                label="Window length (seconds)",
-                info="To reduce load, only the current window is analyzed. Advance to move through the track.",
-            )
-        with gr.Row():
-            spec_show = gr.Button("Show spectrogram", variant="primary")
-            spec_prev = gr.Button("Previous segment")
-            spec_next = gr.Button("Next segment")
-            spec_restart = gr.Button("Restart from beginning")
-        with gr.Row():
-            spec_offset_display = gr.Number(
-                label="Current segment start (s)",
-                value=0.0,
+                spec_window = gr.Slider(
+                    minimum=2,
+                    maximum=60,
+                    value=10,
+                    step=1,
+                    label="Window length (seconds)",
+                    info="To reduce load, only the current window is analyzed. Advance to move through the track.",
+                )
+            with gr.Row(elem_classes=["button-row"]):
+                spec_show = gr.Button("Show spectrogram", variant="primary")
+                spec_prev = gr.Button("Previous segment")
+                spec_next = gr.Button("Next segment")
+                spec_restart = gr.Button("Restart from beginning")
+            with gr.Row():
+                spec_offset_display = gr.Number(
+                    label="Current segment start (s)",
+                    value=0.0,
+                    interactive=False,
+                )
+            spec_image = gr.Image(
+                label="Spectrogram with note guides",
+                type="filepath",
+                height=640,
                 interactive=False,
+                elem_classes=["spec-image"],
             )
-        spec_image = gr.Image(
-            label="Spectrogram with note guides",
-            type="filepath",
-            height=1000,
-            interactive=False,
-        )
-        spec_offset_state = gr.State(value=_init_spectrogram_state())
-
-        gr.Markdown("### Mixdown / Export")
-        with gr.Row():
-            export_fmt = gr.Radio(
-                choices=["wav", "mp3"], value="wav", label="Export format"
-            )
-            mp3_bitrate = gr.Dropdown(
-                choices=["192k", "256k", "320k"], value="320k", label="MP3 bitrate"
-            )
-
-        with gr.Row():
-            tempo = gr.Slider(
-                minimum=0.5,
-                maximum=1.5,
-                value=1.0,
-                step=0.01,
-                label="Tempo (keep pitch)",
-                info="Requires ffmpeg rubberband. 1.0 = no change.",
-            )
-            semitones = gr.Slider(
-                minimum=-12.0,
-                maximum=12.0,
-                value=0.0,
-                step=0.1,
-                label="Pitch shift (keep tempo, semitones)",
-                info="Requires ffmpeg rubberband. 0.0 = no change.",
-            )
-
-        mix_btn = gr.Button("Create mixdown", variant="primary")
-        mix_audio = gr.Audio(
-            label="Mixdown preview", type="filepath", buttons=["download"]
-        )
-        export_file = gr.File(label="Download exported file")
+            spec_offset_state = gr.State(value=_init_spectrogram_state())
 
         def on_source_change(src: str):
             if src == "Upload file":
@@ -866,4 +943,4 @@ def build_ui():
 if __name__ == "__main__":
     app = build_ui()
     app.queue(max_size=32)
-    app.launch()
+    app.launch(theme=gr.themes.Citrus())
