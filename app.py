@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import shutil
@@ -14,6 +15,10 @@ import numpy as np
 import soundfile as sf
 
 import demucs.separate
+
+
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
 
 DEMUCS_MODELS = [
@@ -82,6 +87,7 @@ def _cleanup_dir(path_like) -> None:
 
 
 def _ffmpeg_convert_to_wav(in_path: Path, out_path: Path) -> None:
+    logger.info("Converting %s to wav at %s", in_path, out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     p = _run(
         [
@@ -102,6 +108,7 @@ def _ffmpeg_convert_to_wav(in_path: Path, out_path: Path) -> None:
     )
     if p.returncode != 0:
         raise RuntimeError(f"ffmpeg convert failed:\n{p.stderr.strip()}")
+    logger.info("Finished converting %s to wav", in_path)
 
 
 def _wav_to_mp3(wav_path: Path, mp3_path: Path, bitrate: str = "320k") -> None:
@@ -130,6 +137,13 @@ def _apply_rubberband(
     in_wav: Path, out_wav: Path, tempo: float, semitones: float
 ) -> None:
     pitch_ratio = float(2 ** (semitones / 12.0))
+    logger.info(
+        "Applying rubberband to %s with tempo=%s pitch_ratio=%s -> %s",
+        in_wav,
+        tempo,
+        pitch_ratio,
+        out_wav,
+    )
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     af = f"rubberband=tempo={tempo}:pitch={pitch_ratio}"
     p = _run(
@@ -148,11 +162,14 @@ def _apply_rubberband(
     )
     if p.returncode != 0:
         raise RuntimeError(f"ffmpeg rubberband failed:\n{p.stderr.strip()}")
+    logger.info("Finished rubberband processing for %s", in_wav)
 
 
 def _mix_wavs(wav_paths: list[Path]) -> tuple[np.ndarray, int]:
     if not wav_paths:
         raise ValueError("No stems selected.")
+
+    logger.info("Mixing %s wav files: %s", len(wav_paths), wav_paths)
 
     data_list: list[np.ndarray] = []
     sr: Optional[int] = None
@@ -191,6 +208,7 @@ def _write_wav(path: Path, audio: np.ndarray, sr: int) -> None:
 
 
 def _yt_dlp_download(url: str, outdir: Path) -> Path:
+    logger.info("Starting download from %s", url)
     outdir.mkdir(parents=True, exist_ok=True)
     tmpl = str(outdir / "input.%(ext)s")
 
@@ -216,7 +234,9 @@ def _yt_dlp_download(url: str, outdir: Path) -> Path:
     files = [x for x in outdir.iterdir() if x.is_file()]
     if not files:
         raise RuntimeError("yt-dlp reported success but no file appeared.")
-    return max(files, key=lambda x: x.stat().st_mtime)
+    downloaded = max(files, key=lambda x: x.stat().st_mtime)
+    logger.info("Finished download to %s", downloaded)
+    return downloaded
 
 
 def _render_spectrogram(
@@ -324,6 +344,13 @@ class SepResult:
 def _demucs_separate(
     audio_path: Path, model: str, device: str, two_stems: bool, shifts: int
 ) -> SepResult:
+    logger.info(
+        "Starting Demucs separation: model=%s device=%s two_stems=%s shifts=%s",
+        model,
+        device,
+        two_stems,
+        shifts,
+    )
     workdir = Path(tempfile.mkdtemp(prefix="demucs_gradio_"))
     outdir = workdir / "separated"
     outdir.mkdir(parents=True, exist_ok=True)
@@ -356,7 +383,7 @@ def _demucs_separate(
     stems: dict[str, Path] = {wav.stem: wav for wav in track_dir.glob("*.wav")}
     if not stems:
         raise RuntimeError("Demucs produced no stem wav files.")
-
+    logger.info("Finished Demucs separation with stems: %s", ", ".join(sorted(stems)))
     return SepResult(workdir=workdir, model=model, stems=stems)
 
 
@@ -679,6 +706,14 @@ def build_ui():
             shifts_val: int,
             prev_workdir: Optional[str],
         ):
+            logger.info(
+                "Starting separation with src=%s model=%s device=%s two_stems=%s shifts=%s",
+                src,
+                model_name,
+                device_name,
+                two_stems_flag,
+                shifts_val,
+            )
             _cleanup_dir(prev_workdir)
 
             if src == "Upload file":
@@ -709,6 +744,12 @@ def build_ui():
                 device_name,
                 bool(two_stems_flag),
                 int(shifts_val),
+            )
+
+            logger.info(
+                "Completed separation session at %s with stems: %s",
+                workdir,
+                ", ".join(sorted(res.stems)),
             )
 
             # Also include the download temp dir (if any) under res.workdir for single cleanup path:
@@ -764,6 +805,13 @@ def build_ui():
             url: str,
             input_audio: Optional[str],
         ):
+            logger.info(
+                "Starting mixdown: stems=%s fmt=%s tempo=%s semitones=%s",
+                selected_stems,
+                fmt,
+                tempo_val,
+                semitones_val,
+            )
             wd = Path(workdir) if workdir else None
             next_input_audio = input_audio
 
@@ -858,6 +906,10 @@ def build_ui():
                 mp3_path = outdir / f"{base}.mp3"
                 _wav_to_mp3(final_wav, mp3_path, bitrate=bitrate)
                 export_path = mp3_path
+
+            logger.info(
+                "Mixdown complete: final_wav=%s export_path=%s", final_wav, export_path
+            )
 
             return str(wd), next_input_audio, str(final_wav), str(export_path)
 
