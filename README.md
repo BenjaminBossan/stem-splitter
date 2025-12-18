@@ -22,10 +22,11 @@ A small [Gradio web app](https://www.gradio.app/) to:
 
 ## Install
 
-Create and activate a Python virtual enviroment, then run:
+Ensure that `ffmpeg` is installed. Create and activate a Python virtual enviroment, then run:
 
 ```bash
-git clone 
+git clone https://github.com/BenjaminBossan/stem-splitter.git
+cd stem-splitter
 python -m pip install .
 ```
 
